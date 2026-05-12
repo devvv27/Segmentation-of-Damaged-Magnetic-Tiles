@@ -5,7 +5,9 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms as transforms
+import torchvision.models as models
 from flask import Flask, render_template, request
 from PIL import Image
 
@@ -37,70 +39,111 @@ class DoubleConv(nn.Module):
         return self.double_conv(x)
 
 
-class UNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=1, features=None, dropout_rate=0.15):
+class EfficientNetV2SUNet(nn.Module):
+    """
+    U-Net with a pretrained EfficientNetV2-S encoder.
+    - Classification head branches from the bottleneck for damage type (6 classes)
+    - Segmentation decoder predicts the defect mask
+    """
+    def __init__(self, in_channels=3, num_classes=6, dropout_rate=0.15):
         super().__init__()
-        if features is None:
-            features = [32, 64, 128, 256]
 
-        self.enc1 = DoubleConv(in_channels, features[0], dropout_rate, use_dropout=False)
-        self.pool1 = nn.MaxPool2d(2)
-        self.enc2 = DoubleConv(features[0], features[1], dropout_rate, use_dropout=False)
-        self.pool2 = nn.MaxPool2d(2)
-        self.enc3 = DoubleConv(features[1], features[2], dropout_rate, use_dropout=False)
-        self.pool3 = nn.MaxPool2d(2)
-        self.enc4 = DoubleConv(features[2], features[3], dropout_rate=0.15, use_dropout=False)
-        self.pool4 = nn.MaxPool2d(2)
-        self.bottleneck = DoubleConv(features[3], features[3] * 2, dropout_rate=0.2, use_dropout=True)
+        try:
+            backbone = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.DEFAULT)
+        except Exception as exc:
+            print(f"Warning: pretrained EfficientNetV2-S weights unavailable ({exc}); using random init.")
+            backbone = models.efficientnet_v2_s(weights=None)
 
-        self.up4 = nn.ConvTranspose2d(features[3] * 2, features[3], kernel_size=2, stride=2)
-        self.dec4 = DoubleConv(features[3] * 2, features[3], dropout_rate, use_dropout=True)
+        self.features = backbone.features
 
-        self.up3 = nn.ConvTranspose2d(features[3], features[2], kernel_size=2, stride=2)
-        self.dec3 = DoubleConv(features[2] * 2, features[2], dropout_rate, use_dropout=True)
+        for param in self.parameters():
+            param.requires_grad = False
 
-        self.up2 = nn.ConvTranspose2d(features[2], features[1], kernel_size=2, stride=2)
-        self.dec2 = DoubleConv(features[1] * 2, features[1], dropout_rate, use_dropout=True)
+        self.bottleneck = DoubleConv(1280, 512, dropout_rate=0.2, use_dropout=True)
 
-        self.up1 = nn.ConvTranspose2d(features[1], features[0], kernel_size=2, stride=2)
-        self.dec1 = DoubleConv(features[0] * 2, features[0], dropout_rate, use_dropout=True)
+        self.avg_pool_cls = nn.AdaptiveAvgPool2d(1)
+        self.class_head = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes),
+        )
 
-        self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
+        self.skip4 = nn.Conv2d(128, 128, kernel_size=1)
+        self.skip3 = nn.Conv2d(64, 64, kernel_size=1)
+        self.skip2 = nn.Conv2d(48, 64, kernel_size=1)
+        self.skip1 = nn.Conv2d(24, 32, kernel_size=1)
+
+        self.up4 = nn.ConvTranspose2d(512, 128, kernel_size=2, stride=2)
+        self.dec4 = DoubleConv(128 + 128, 128, dropout_rate, use_dropout=True)
+
+        self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec3 = DoubleConv(64 + 64, 64, dropout_rate, use_dropout=True)
+
+        self.up2 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
+        self.dec2 = DoubleConv(64 + 64, 64, dropout_rate, use_dropout=True)
+
+        self.up1 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.dec1 = DoubleConv(32 + 32, 32, dropout_rate, use_dropout=True)
+
+        self.up0 = nn.ConvTranspose2d(32, 32, kernel_size=2, stride=2)
+        self.final_conv = nn.Conv2d(32, 1, kernel_size=1)
+
+        for module in [self.bottleneck, self.class_head, self.skip4, self.skip3, self.skip2, self.skip1,
+                       self.up4, self.up3, self.up2, self.up1, self.up0,
+                       self.dec1, self.dec2, self.dec3, self.dec4, self.final_conv]:
+            for param in module.parameters():
+                param.requires_grad = True
 
     def forward(self, x):
-        e1 = self.enc1(x)
-        p1 = self.pool1(e1)
-        e2 = self.enc2(p1)
-        p2 = self.pool2(e2)
-        e3 = self.enc3(p2)
-        p3 = self.pool3(e3)
-        e4 = self.enc4(p3)
-        p4 = self.pool4(e4)
-        b = self.bottleneck(p4)
+        feats = []
+        out = x
+        for layer in self.features:
+            out = layer(out)
+            feats.append(out)
+
+        e0 = feats[0]
+        e1 = feats[1]
+        e2 = feats[2]
+        e3 = feats[3]
+        e4 = feats[4]
+        e7 = feats[7]
+
+        b = self.bottleneck(e7)
+
+        class_logits = self.avg_pool_cls(b)
+        class_logits = class_logits.view(class_logits.size(0), -1)
+        class_logits = self.class_head(class_logits)
 
         d4 = self.up4(b)
-        d4 = torch.cat([d4, e4], dim=1)
+        d4 = torch.cat([d4, self.skip4(e4)], dim=1)
         d4 = self.dec4(d4)
 
         d3 = self.up3(d4)
-        d3 = torch.cat([d3, e3], dim=1)
+        d3 = torch.cat([d3, self.skip3(e3)], dim=1)
         d3 = self.dec3(d3)
 
         d2 = self.up2(d3)
-        d2 = torch.cat([d2, e2], dim=1)
+        d2 = torch.cat([d2, self.skip2(e2)], dim=1)
         d2 = self.dec2(d2)
 
         d1 = self.up1(d2)
-        d1 = torch.cat([d1, e1], dim=1)
+        d1 = torch.cat([d1, self.skip1(e1)], dim=1)
         d1 = self.dec1(d1)
 
-        return self.final_conv(d1)
+        d0 = self.up0(d1)
+        seg_logits = self.final_conv(d0)
+
+        return seg_logits, class_logits
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(APP_DIR, "best_unet_mt.pth")
+MODEL_PATH = os.path.join(APP_DIR, "Models", "efficientnetv2", "best_multitask_efficientnetv2s.pth")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMG_SIZE = (256, 256)
+
+# Class names for damage classification
+CLASS_NAMES = ['MT_Blowhole', 'MT_Break', 'MT_Crack', 'MT_Fray', 'MT_Free', 'MT_Uneven']
 
 TRANSFORM = transforms.Compose(
     [
@@ -112,8 +155,8 @@ TRANSFORM = transforms.Compose(
 
 
 def load_model():
-    model = UNet(in_channels=3, out_channels=1, features=[32, 64, 128, 256], dropout_rate=0.15)
-    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
+    model = EfficientNetV2SUNet(in_channels=3, num_classes=6, dropout_rate=0.15)
+    state_dict = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
     model.load_state_dict(state_dict)
     model.to(DEVICE)
     model.eval()
@@ -164,6 +207,8 @@ def index():
         "defect_pixels": None,
         "total_pixels": None,
         "defect_ratio": None,
+        "predicted_class": None,
+        "predicted_confidence": None,
         "error": None,
     }
 
@@ -183,8 +228,12 @@ def index():
 
             x = TRANSFORM(original).unsqueeze(0).to(DEVICE)
             with torch.no_grad():
-                logits = model(x)
-                probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
+                seg_logits, class_logits = model(x)
+                probs = torch.sigmoid(seg_logits)[0, 0].cpu().numpy()
+                class_probs = torch.softmax(class_logits, dim=1)[0].cpu().numpy()
+                predicted_class_idx = int(np.argmax(class_probs))
+                predicted_class_name = CLASS_NAMES[predicted_class_idx]
+                predicted_confidence = float(class_probs[predicted_class_idx]) * 100
 
             mask_small = (probs >= 0.5).astype(np.uint8) * 255
             mask_pil = Image.fromarray(mask_small, mode="L").resize((orig_w, orig_h), Image.NEAREST)
@@ -201,6 +250,8 @@ def index():
             context["defect_pixels"] = defect_pixels
             context["total_pixels"] = total_pixels
             context["defect_ratio"] = round(defect_ratio, 2)
+            context["predicted_class"] = predicted_class_name
+            context["predicted_confidence"] = round(predicted_confidence, 2)
         except Exception as exc:
             context["error"] = f"Segmentation failed: {exc}"
 

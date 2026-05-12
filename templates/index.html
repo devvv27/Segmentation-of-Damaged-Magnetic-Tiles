@@ -12,7 +12,7 @@
     <header class="hero">
       <p class="eyebrow">Computer Vision Inference</p>
       <h1>{{ title }}</h1>
-      <p class="sub">Upload one tile image to generate a defect mask and an overlay from your trained U-Net model.</p>
+      <p class="sub">Upload one tile image to generate a defect mask and an overlay from your trained EfficientNetV2-S model.</p>
       {% if model_error %}
         <p class="alert">{{ model_error }}</p>
       {% endif %}
@@ -34,6 +34,12 @@
           Defect area: <strong>{{ defect_pixels }}</strong> / {{ total_pixels }} pixels
           (<strong>{{ defect_ratio }}%</strong>)
         </p>
+        {% if predicted_class %}
+          <p class="eval">
+            Predicted Defect Type: <strong>{{ predicted_class }}</strong>
+            (Confidence: <strong>{{ predicted_confidence }}%</strong>)
+          </p>
+        {% endif %}
       {% endif %}
     </section>
 
