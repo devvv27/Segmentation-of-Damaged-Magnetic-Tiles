@@ -13,17 +13,6 @@
       <p class="eyebrow">Computer Vision Inference</p>
       <h1>{{ title }}</h1>
       <p class="sub">Upload one tile image to generate a defect mask and an overlay from your trained U-Net model.</p>
-      <div class="meta">
-        <span>Device: {{ device }}</span>
-        <span class="dot">•</span>
-        <span>
-          {% if model_loaded %}
-            Model loaded from best_unet_mt.pth
-          {% else %}
-            Model not loaded
-          {% endif %}
-        </span>
-      </div>
       {% if model_error %}
         <p class="alert">{{ model_error }}</p>
       {% endif %}
