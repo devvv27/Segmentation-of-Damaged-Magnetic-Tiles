@@ -10,6 +10,8 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 from flask import Flask, render_template, request
 from PIL import Image
+import ollama
+import json
 
 
 class DoubleConv(nn.Module):
@@ -181,6 +183,85 @@ def build_overlay(original_pil, mask_arr):
     return Image.fromarray(overlay_arr)
 
 
+def assess_severity_with_ollama(overlay_pil, defect_ratio, defect_class):
+    """
+    Send the overlay image + defect metrics to llava (local Ollama model).
+    Returns a dict with severity, action, and explanation.
+    """
+    try:
+        # Convert PIL image to base64 for Ollama
+        buf = io.BytesIO()
+        overlay_pil.save(buf, format="PNG")
+        overlay_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        
+        # Build the prompt with context
+        prompt = f"""You are an expert in magnetic tile quality control. 
+        
+This image shows a magnetic tile with defect mask overlay. The RED areas indicate detected damage/defects.
+Defect metrics:
+- Defect ratio: {defect_ratio:.2f}%
+- Predicted defect type: {defect_class}
+
+Defect type context:
+- MT_Blowhole: air pockets or voids in the tile surface
+- MT_Break: cracks, fractures, or breaks in the structure
+- MT_Crack: surface cracks or splits
+- MT_Fray: frayed or damaged edges
+- MT_Free: no defects
+- MT_Uneven: uneven surface or warping
+
+Based on the {defect_class} defect shown in the red overlay and the {defect_ratio:.2f}% defect ratio, assess severity and recommend class-specific action.
+
+Respond in JSON format:
+{{
+  "severity": 1,
+  "action": "1-2 sentence explanation of what to do with this {defect_class} tile"
+}}
+
+Severity scale: 1=no defect, 2=minimal/cosmetic (leave), 3=moderate (monitor/inspect), 4=severe (needs repair), 5=critical (reject)."""
+        response = ollama.generate(
+            model="llava",
+            prompt=prompt,
+            images=[overlay_b64],
+            stream=False
+        )
+        
+        response_text = response.get("response", "").strip()
+        
+        # Strip markdown code fences if present
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+            response_text = response_text.strip()
+        
+        # Try to parse JSON from response
+        try:
+            result = json.loads(response_text)
+            severity = result.get("severity", 3)
+            # Ensure severity is 1-5
+            if isinstance(severity, str):
+                severity = int(severity)
+            severity = max(1, min(5, severity))
+            return {
+                "severity": severity,
+                "action": result.get("action", "Inspect the tile manually for further assessment.")
+            }
+        except (json.JSONDecodeError, ValueError):
+            # Fallback: moderate severity
+            return {
+                "severity": 3,
+                "action": f"Model assessment: {response_text[:150]}"
+            }
+    
+    except Exception as exc:
+        return {
+            "severity": 3,
+            "action": f"Failed to assess with Ollama: {exc}"
+        }
+
+
+
 app = Flask(__name__)
 
 model = None
@@ -209,6 +290,9 @@ def index():
         "defect_ratio": None,
         "predicted_class": None,
         "predicted_confidence": None,
+        "severity": None,
+        "action": None,
+        "explanation": None,
         "error": None,
     }
 
@@ -252,6 +336,12 @@ def index():
             context["defect_ratio"] = round(defect_ratio, 2)
             context["predicted_class"] = predicted_class_name
             context["predicted_confidence"] = round(predicted_confidence, 2)
+            
+            # Call Ollama to assess severity from the overlay image
+            severity_result = assess_severity_with_ollama(overlay_pil, defect_ratio, predicted_class_name)
+            context["severity"] = severity_result.get("severity", 3)
+            context["action"] = severity_result.get("action", "Inspect manually.")
+            
         except Exception as exc:
             context["error"] = f"Segmentation failed: {exc}"
 

@@ -40,6 +40,16 @@
             (Confidence: <strong>{{ predicted_confidence }}%</strong>)
           </p>
         {% endif %}
+        {% if severity %}
+          <div class="severity-assessment severity-{{ severity }}">
+            <p class="severity-label">
+              Severity: <strong>{{ severity }}/5</strong>
+            </p>
+            <p class="action-label">
+              {{ action }}
+            </p>
+          </div>
+        {% endif %}
       {% endif %}
     </section>
 

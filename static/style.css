@@ -138,6 +138,56 @@ button:hover {
   font-weight: 700;
 }
 
+.severity-assessment {
+  margin: 16px 0 0;
+  padding: 14px;
+  border-radius: 10px;
+  background: rgba(255, 251, 245, 0.9);
+  border-left: 4px solid var(--accent);
+}
+
+.severity-assessment.severity-1 {
+  border-left-color: #2d7a3a;
+  background: rgba(45, 122, 58, 0.08);
+}
+
+.severity-assessment.severity-2 {
+  border-left-color: #65a74c;
+  background: rgba(101, 167, 76, 0.08);
+}
+
+.severity-assessment.severity-3 {
+  border-left-color: #d97706;
+  background: rgba(217, 119, 6, 0.08);
+}
+
+.severity-assessment.severity-4 {
+  border-left-color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.severity-assessment.severity-5 {
+  border-left-color: #b33a2b;
+  background: rgba(179, 58, 43, 0.12);
+}
+
+.severity-label {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.severity-label strong {
+  font-weight: 700;
+}
+
+.action-label {
+  margin: 8px 0 0;
+  font-size: 0.95rem;
+  color: var(--ink);
+  line-height: 1.4;
+}
+
 .results {
   margin-top: 14px;
   display: grid;
