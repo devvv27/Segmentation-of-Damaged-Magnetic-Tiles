@@ -1,0 +1,149 @@
+# Segmentation of Damaged Magnetic Tiles
+
+A multi-task deep learning system that segments and classifies surface defects on magnetic tiles from a single forward pass. Given a tile image, the model produces a pixel-level defect mask and a defect-type label at the same time, instead of relying on two separate pipelines.
+
+Magnetic tiles are used heavily in motors, sensors, and other electromagnetic components, and surface defects like blowholes, cracks, and breaks directly affect performance. Most factories still rely on manual visual inspection, which is slow and inconsistent at scale. This project was built to automate that process end to end, from detection to a usable web interface.
+
+The approach and results are written up in more detail in the accompanying paper, *EfficientNetV2-S U-Net Based Multi-Task Detection of Magnetic Tile Defects*.
+
+## What it does
+
+- Takes a 256x256 magnetic tile image as input
+- Outputs a binary segmentation mask locating the defect
+- Classifies the defect into one of six categories: Blowhole, Break, Crack, Fray, Uneven, or Free (no defect)
+- Overlays the predicted mask on the original image and reports the defect ratio
+- Optionally generates a severity estimate and recommendation using a local LLaVA model through Ollama
+
+## Architecture
+
+The core model pairs a frozen, pretrained EfficientNetV2-S encoder with a U-Net style decoder, and adds a classification head that branches off the bottleneck. The encoder handles feature extraction, the decoder reconstructs a full-resolution segmentation map using skip connections at four scales, and the classification head runs in parallel off the same shared features.
+
+Roughly, the pipeline looks like:
+
+```
+Input (256x256x3)
+      |
+EfficientNetV2-S encoder (frozen, ImageNet weights)
+      |
+      +----> skip connections at 128x128, 64x64, 32x32, 16x16
+      |
+Bottleneck (512 channels)
+   /              \
+U-Net decoder      Classification head
+   |                    |
+Segmentation mask   6-class defect label
+(256x256x1)
+```
+
+Segmentation loss is a weighted combination of Binary Cross-Entropy and Dice loss, and classification uses standard CrossEntropy loss, all trained jointly with AdamW and a ReduceLROnPlateau schedule.
+
+## Results
+
+Before settling on the final design, we compared segmentation architectures, encoder backbones, and attention modules.
+
+**Segmentation architecture (U-Net vs U-Net++)**
+
+| Model     | IoU    | Dice   | Precision | Recall | F1     |
+|-----------|--------|--------|-----------|--------|--------|
+| U-Net     | 0.7839 | 0.8789 | 0.8947    | 0.8636 | 0.8789 |
+| U-Net++   | 0.7816 | 0.8774 | 0.5777    | 0.9402 | 0.8774 |
+
+U-Net matched U-Net++ on performance while training in roughly 40 minutes against nearly 3 hours for U-Net++, so it was kept as the baseline.
+
+**Encoder backbone comparison**
+
+| Backbone         | IoU    | mIoU   | Dice   | F1     | Accuracy |
+|------------------|--------|--------|--------|--------|----------|
+| EfficientNetV2-S  | 0.8451 | 0.9202 | 0.9160 | 0.9160 | 0.9956   |
+| ResNet50          | 0.8011 | 0.8977 | 0.8896 | 0.8896 | 0.9944   |
+| ConvNeXt          | 0.1058 | 0.5382 | 0.1914 | 0.1914 | 0.9708   |
+
+EfficientNetV2-S came out ahead on every metric and was chosen as the final backbone. ConvNeXt underperformed noticeably, likely because it needs more training data than this dataset provides.
+
+**Attention modules**
+
+CBAM, SE, and Triplet Attention were each tested on top of the EfficientNetV2-S U-Net. None improved on the baseline, and Triplet Attention hurt performance significantly, so the final model was kept without any added attention mechanism.
+
+**Final model**
+
+- IoU: 84.51%
+- mIoU: 92.02%
+- Dice: 91.60%
+- F1-score: 91.60%
+- Accuracy: 99.56%
+
+## Dataset
+
+The project uses the magnetic tile defect dataset introduced by Huang et al., containing 1,344 images across six categories: Blowhole, Break, Crack, Fray, Uneven, and Free. Each image comes with a pixel-level ground truth mask. Class-specific augmentation was applied before splitting the data into training, validation, and test sets in a 60:20:20 ratio.
+
+## Repository structure
+
+```
+.
+├── MT_Blowhole/                 # Dataset images and masks, Blowhole class
+├── MT_Break/                    # Dataset images and masks, Break class
+├── MT_Crack/                    # Dataset images and masks, Crack class
+├── MT_Fray/                     # Dataset images and masks, Fray class
+├── MT_Free/                     # Dataset images and masks, Free (no defect) class
+├── MT_Uneven/                   # Dataset images and masks, Uneven class
+├── Models/                      # Trained model checkpoints
+│   ├── SegFormer/
+│   ├── Unet/
+│   ├── UnetPlusPlus/
+│   ├── convnext/
+│   ├── efficientnetv2/
+│   └── resnet50/
+├── static/                      # Static assets for the web app
+├── templates/                   # HTML templates for the web app
+├── augment_dataset.py           # Data augmentation pipeline
+├── UnetPlusPlus.ipynb           # Training / experimentation notebook
+├── web_app.py                   # Flask deployment
+├── dataset.png                  # Dataset overview figure
+├── NumberOfImages.txt           # Per-class image counts
+└── Surface_Defect_Saliency_of_Magnetic_Tile.pdf   # Reference paper
+```
+
+## Setup
+
+```bash
+git clone https://github.com/devvv27/Segmentation-of-Damaged-Magnetic-Tiles.git
+cd Segmentation-of-Damaged-Magnetic-Tiles
+pip install -r requirements.txt
+```
+
+The project expects PyTorch, along with the usual deep learning and web stack (Flask for the interface, plus standard image processing libraries). If you're running the severity estimation feature, you'll also need [Ollama](https://ollama.com) installed locally with the LLaVA model pulled:
+
+```bash
+ollama pull llava
+```
+
+## Running the web app
+
+```bash
+python web_app.py
+```
+
+Upload a tile image through the interface. The app runs inference, then displays the predicted defect class, the segmentation mask, the overlay, and the computed defect ratio.
+
+## Training
+
+Model experiments and training runs are in `UnetPlusPlus.ipynb`, with dataset augmentation handled separately in `augment_dataset.py`. Swap the backbone or decoder as needed to reproduce the comparisons in the paper.
+
+## Authors
+
+- Manoj Srivatsav P
+- Saran J Palani
+- Chandrakiran Koparappu
+- Dewang Choudhary
+
+Advised by Radha D, Department of Computer Science and Engineering, Amrita School of Computing, Bengaluru, Amrita Vishwa Vidyapeetham.
+
+## Citation
+
+If you use this work, please cite the accompanying paper:
+
+```
+Srivatsav P, M., Palani, S. J., Koparappu, C., Choudhary, D., & D, Radha.
+EfficientNetV2-S U-Net Based Multi-Task Detection of Magnetic Tile Defects.
+Amrita School of Computing, Bengaluru.
+```
