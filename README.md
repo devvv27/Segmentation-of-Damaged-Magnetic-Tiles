@@ -65,7 +65,7 @@ Loss decreases steadily for both training and validation, with a few brief spike
 
 **Qualitative results**
 
-![Sample predictions](sample_predictions.jpeg)
+![Sample predictions](sample.jpeg)
 
 Each row shows the original tile image, the ground truth mask, and the predicted overlay with the defect region highlighted in red, along with the predicted class. The model localizes blowholes, cracks, breaks, and fraying with tight boundaries, and correctly leaves defect-free tiles unmarked.
 
