@@ -18,22 +18,7 @@ The approach and results are written up in more detail in the accompanying paper
 
 The core model pairs a frozen, pretrained EfficientNetV2-S encoder with a U-Net style decoder, and adds a classification head that branches off the bottleneck. The encoder handles feature extraction, the decoder reconstructs a full-resolution segmentation map using skip connections at four scales, and the classification head runs in parallel off the same shared features.
 
-Roughly, the pipeline looks like:
-
-```
-Input (256x256x3)
-      |
-EfficientNetV2-S encoder (frozen, ImageNet weights)
-      |
-      +----> skip connections at 128x128, 64x64, 32x32, 16x16
-      |
-Bottleneck (512 channels)
-   /              \
-U-Net decoder      Classification head
-   |                    |
-Segmentation mask   6-class defect label
-(256x256x1)
-```
+![Model architecture](assets/architecture.jpeg)
 
 Segmentation loss is a weighted combination of Binary Cross-Entropy and Dice loss, and classification uses standard CrossEntropy loss, all trained jointly with AdamW and a ReduceLROnPlateau schedule.
 
@@ -72,6 +57,20 @@ CBAM, SE, and Triplet Attention were each tested on top of the EfficientNetV2-S 
 - F1-score: 91.60%
 - Accuracy: 99.56%
 
+**Training curves**
+
+![Training and validation curves](assets/training_curves.png)
+
+Loss decreases steadily for both training and validation, with a few brief spikes from harder batches that the model recovers from immediately. IoU and Dice climb quickly in the early epochs and then level off.
+
+**Qualitative results**
+
+![Sample predictions](assets/sample_predictions.jpeg)
+
+Each row shows the original tile image, the ground truth mask, and the predicted overlay with the defect region highlighted in red, along with the predicted class. The model localizes blowholes, cracks, breaks, and fraying with tight boundaries, and correctly leaves defect-free tiles unmarked.
+
 ## Dataset
 
 The project uses the magnetic tile defect dataset introduced by Huang et al., containing 1,344 images across six categories: Blowhole, Break, Crack, Fray, Uneven, and Free. Each image comes with a pixel-level ground truth mask. Class-specific augmentation was applied before splitting the data into training, validation, and test sets in a 60:20:20 ratio.
+
+![Dataset overview](assets/dataset.png)
